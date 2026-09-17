@@ -17,6 +17,11 @@ public:
 
   explicit AddressSpace(bool enable_mem2 = false);
   AddressSpace(std::size_t mem1_size, std::size_t mem2_size);
+  /* Adopts memory owned by the caller. Needed where the guest RAM cannot come
+   * from the heap -- the PS Vita port maps its 24 MB MEM1 and 64 MB MEM2 with
+   * sceKernelAllocMemBlock, and routing them through a std::vector would move
+   * 88 MB onto the newlib heap. The spans must outlive the AddressSpace. */
+  AddressSpace(std::span<std::uint8_t> mem1, std::span<std::uint8_t> mem2);
 
   std::span<std::uint8_t> GetMem1();
   std::span<const std::uint8_t> GetMem1() const;
@@ -39,7 +44,11 @@ public:
   void Clear();
 
 private:
-  std::vector<std::uint8_t> m_mem1;
-  std::vector<std::uint8_t> m_mem2;
+  /* Populated only when this AddressSpace owns its memory; the spans below are
+   * what every access goes through, so both modes share one code path. */
+  std::vector<std::uint8_t> m_owned_mem1;
+  std::vector<std::uint8_t> m_owned_mem2;
+  std::span<std::uint8_t> m_mem1;
+  std::span<std::uint8_t> m_mem2;
 };
 }

@@ -31,7 +31,13 @@ AddressSpace::AddressSpace(bool enable_mem2)
 }
 
 AddressSpace::AddressSpace(std::size_t mem1_size, std::size_t mem2_size)
-    : m_mem1(mem1_size), m_mem2(mem2_size)
+    : m_owned_mem1(mem1_size), m_owned_mem2(mem2_size), m_mem1(m_owned_mem1),
+      m_mem2(m_owned_mem2)
+{
+}
+
+AddressSpace::AddressSpace(std::span<std::uint8_t> mem1, std::span<std::uint8_t> mem2)
+    : m_mem1(mem1), m_mem2(mem2)
 {
 }
 
