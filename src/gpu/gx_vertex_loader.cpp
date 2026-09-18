@@ -126,7 +126,19 @@ const std::uint8_t* AttributeData(Reader& reader, const AddressSpace& memory,
 
 float ReadComponent(const std::uint8_t* data, std::uint32_t format, std::uint32_t fraction)
 {
-  const float scale = std::ldexp(1.0f, -static_cast<int>(fraction));
+  // 2^-fraction, assembled as an IEEE-754 exponent rather than asked for.
+  // std::ldexp is a libm call -- literally `bl ldexpf` on this toolchain -- and
+  // this ran once per *component*, so a vertex carrying a position, a normal
+  // and a few texture coordinates paid for a dozen of them. Vertex loading was
+  // 41.9s of the 158s at retraces 1100-1400, about 1,300 cycles a vertex, which
+  // is far more than reading thirty-odd bytes can account for.
+  //
+  // Every fraction reaching here comes from a five-bit CP field, so it is 0..31
+  // and 2^-fraction is exactly representable; the two forms were checked to
+  // produce identical bit patterns for all 32 values. The float case below does
+  // not use scale at all and used to pay for it anyway, because a call that can
+  // set errno cannot be optimised away -- as plain arithmetic it now folds out.
+  const float scale = std::bit_cast<float>((127u - fraction) << 23);
   switch (format)
   {
   case 0: return data[0] * scale;
