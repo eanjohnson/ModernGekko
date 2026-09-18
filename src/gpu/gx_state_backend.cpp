@@ -2,11 +2,15 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "moderngekko/gx_state_backend.hpp"
+#include "moderngekko/phase_hook.hpp"
 
 #include <algorithm>
 
 namespace moderngekko
 {
+volatile unsigned char *g_phase_slot = nullptr;
+unsigned char g_phase_vertex_load = 0;
+
 GxStateBackend::GxStateBackend(AddressSpace& memory) : m_memory(memory), m_vertex_loader(memory)
 {
 }
@@ -117,7 +121,12 @@ void GxStateBackend::Draw(const GxDrawPacket& packet)
   if (m_device)
   {
     GxDecodedDraw decoded;
-    if (m_vertex_loader.Decode(packet, m_cp, &decoded))
+    bool decoded_ok;
+    {
+      PhaseScope phase(g_phase_vertex_load);
+      decoded_ok = m_vertex_loader.Decode(packet, m_cp, &decoded);
+    }
+    if (decoded_ok)
       m_device->SubmitDecodedDraw(packet, decoded, GetState());
     else
       m_device->SubmitDraw(packet, GetState());
