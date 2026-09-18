@@ -89,6 +89,11 @@ private:
   AddressSpace& m_memory;
   GxRenderDevice* m_device = nullptr;
   GxVertexLoader m_vertex_loader;
+  /* Reused across draws rather than rebuilt per draw: Decode clear()s it
+   * and clear() keeps capacity, so after the first few draws neither
+   * vector allocates again. Safe because Draw is not reentrant and the
+   * device consumes this synchronously. */
+  GxDecodedDraw m_decoded;
   std::array<std::uint32_t, 256> m_cp{};
   std::array<std::uint32_t, 0x1058> m_xf{};
   std::array<std::uint32_t, 256> m_bp{};

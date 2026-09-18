@@ -120,14 +120,13 @@ void GxStateBackend::Draw(const GxDrawPacket& packet)
 {
   if (m_device)
   {
-    GxDecodedDraw decoded;
     bool decoded_ok;
     {
       PhaseScope phase(g_phase_vertex_load);
-      decoded_ok = m_vertex_loader.Decode(packet, m_cp, &decoded);
+      decoded_ok = m_vertex_loader.Decode(packet, m_cp, &m_decoded);
     }
     if (decoded_ok)
-      m_device->SubmitDecodedDraw(packet, decoded, GetState());
+      m_device->SubmitDecodedDraw(packet, m_decoded, GetState());
     else
       m_device->SubmitDraw(packet, GetState());
   }
