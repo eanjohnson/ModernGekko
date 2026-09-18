@@ -89,6 +89,7 @@ void GxCommandProcessor::SetBackend(GpuBackend* backend)
 void GxCommandProcessor::Reset()
 {
   m_buffer.clear();
+  m_pending_need = 0;
   m_vcd_low = 0;
   m_vcd_high = 0;
   m_vat = {};
@@ -115,9 +116,18 @@ void GxCommandProcessor::WriteBytes(std::span<const std::uint8_t> bytes)
   std::size_t consumed = 0;
   while (consumed < m_buffer.size())
   {
-    const std::size_t size = DecodeOne(std::span{m_buffer}.subspan(consumed));
+    /* The guest writes the FIFO four bytes at a time, and a draw command is
+     * three bytes of header plus a vertex each twenty or so -- so a seven
+     * vertex draw used to be re-parsed, and its vertex size recomputed out of
+     * the VCD and VAT words, on each of thirty-six writes before it was
+     * complete. Once a command has said how long it is, wait for that much. */
+    if (m_pending_need != 0u && m_buffer.size() - consumed < m_pending_need)
+      break;
+    const std::size_t size = DecodeOne(std::span{m_buffer}.subspan(consumed),
+                                       &m_pending_need);
     if (size == 0u)
       break;
+    m_pending_need = 0;
     consumed += size;
     ++m_command_count;
   }
@@ -175,10 +185,16 @@ std::uint32_t GxCommandProcessor::GetVertexSize(std::uint8_t vat) const
   return size;
 }
 
-std::size_t GxCommandProcessor::DecodeOne(std::span<const std::uint8_t> data)
+std::size_t GxCommandProcessor::DecodeOne(std::span<const std::uint8_t> data,
+                                          std::size_t* need)
 {
+  const auto want = [need](std::size_t bytes) {
+    if (need != nullptr)
+      *need = bytes;
+    return std::size_t{0};
+  };
   if (data.empty())
-    return 0;
+    return want(1);
   const std::uint8_t command = data[0];
   if (command == 0x00u)
   {
@@ -196,19 +212,19 @@ std::size_t GxCommandProcessor::DecodeOne(std::span<const std::uint8_t> data)
   if (command == 0x08u)
   {
     if (data.size() < 6u)
-      return 0;
+      return want(6);
     LoadCp(data[1], Read32(data, 2));
     return 6;
   }
   if (command == 0x10u)
   {
     if (data.size() < 5u)
-      return 0;
+      return want(5);
     const std::uint32_t header = Read32(data, 1);
     const std::uint8_t count = static_cast<std::uint8_t>(((header >> 16) & 0xFu) + 1u);
     const std::size_t size = 5u + count * 4u;
     if (data.size() < size)
-      return 0;
+      return want(size);
     std::array<std::uint32_t, 16> values{};
     for (std::uint8_t i = 0; i < count; ++i)
       values[i] = Read32(data, 5u + i * 4u);
@@ -220,7 +236,7 @@ std::size_t GxCommandProcessor::DecodeOne(std::span<const std::uint8_t> data)
   if (command == 0x20u || command == 0x28u || command == 0x30u || command == 0x38u)
   {
     if (data.size() < 5u)
-      return 0;
+      return want(5);
     const std::uint32_t value = Read32(data, 1);
     if (m_backend)
       m_backend->LoadIndexedXf(static_cast<std::uint8_t>(command / 8u + 8u),
@@ -232,14 +248,14 @@ std::size_t GxCommandProcessor::DecodeOne(std::span<const std::uint8_t> data)
   if (command == 0x40u)
   {
     if (data.size() < 9u)
-      return 0;
+      return want(9);
     ExecuteDisplayList(Read32(data, 1) & ~31u, Read32(data, 5) & ~31u);
     return 9;
   }
   if (command == 0x61u)
   {
     if (data.size() < 5u)
-      return 0;
+      return want(5);
     const std::uint32_t value = Read32(data, 1);
     if (m_backend)
       m_backend->LoadBpRegister(static_cast<std::uint8_t>(value >> 24), value & 0xFFFFFFu);
@@ -248,15 +264,15 @@ std::size_t GxCommandProcessor::DecodeOne(std::span<const std::uint8_t> data)
   if (command >= 0x80u && command <= 0xBFu)
   {
     if (data.size() < 3u)
-      return 0;
+      return want(3);
     const std::uint8_t vat = command & 7u;
     const std::uint16_t count = Read16(data, 1);
     const std::uint32_t vertex_size = GetVertexSize(vat);
     if (vertex_size != 0u && count > (std::numeric_limits<std::size_t>::max() - 3u) / vertex_size)
-      return 0;
+      return want(0); /* nonsense length: nothing to wait for */
     const std::size_t size = 3u + static_cast<std::size_t>(count) * vertex_size;
     if (data.size() < size)
-      return 0;
+      return want(size);
     if (m_backend)
       m_backend->Draw({static_cast<GxPrimitive>((command & 0x78u) >> 3), vat, vertex_size,
                        count, data.subspan(3, size - 3)});

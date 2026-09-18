@@ -29,13 +29,22 @@ public:
   std::uint32_t GetVertexSize(std::uint8_t vat) const;
 
 private:
-  std::size_t DecodeOne(std::span<const std::uint8_t> data);
+  /* `need`, when given, comes back as the number of bytes this command will
+   * take once the rest of it arrives -- so a caller feeding the FIFO four
+   * bytes at a time can wait instead of re-parsing a half-written command on
+   * every write. It is an out-parameter rather than a member because
+   * ExecuteDisplayList decodes a second stream from inside this one. */
+  std::size_t DecodeOne(std::span<const std::uint8_t> data,
+                        std::size_t* need = nullptr);
   void ExecuteDisplayList(std::uint32_t address, std::uint32_t size);
   void LoadCp(std::uint8_t command, std::uint32_t value);
 
   GpuBackend* m_backend = nullptr;
   AddressSpace* m_memory = nullptr;
   std::vector<std::uint8_t> m_buffer;
+  /* How many bytes the command at the head of m_buffer needs, or 0 when that
+   * is not known yet. */
+  std::size_t m_pending_need = 0;
   std::uint32_t m_vcd_low = 0;
   std::uint32_t m_vcd_high = 0;
   std::array<std::array<std::uint32_t, 3>, 8> m_vat{};
