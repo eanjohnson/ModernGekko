@@ -248,6 +248,51 @@ bool GxVertexLoader::Decode(const GxDrawPacket& packet, std::span<const std::uin
   const std::uint32_t g1 = cp[0x80u + packet.vat];
   const std::uint32_t g2 = cp[0x90u + packet.vat];
 
+  // Everything the descriptors imply is fixed for the whole draw: it falls out
+  // of vcd_low, vcd_high and the three VAT words, all read just above and none
+  // of them touched by decoding a vertex. It was being re-derived per vertex --
+  // and the texture format and fraction per *component*, each an eight-way
+  // switch -- which at seven vertices a draw is most of the work done twice.
+  //
+  // Vertex loading is the largest graphics phase on the console (29.2s of the
+  // 146s at retraces 1100-1400 after the ldexpf removal, about 913 cycles a
+  // vertex), so the invariant part is worth lifting out even though each piece
+  // of it is small. -fno-strict-aliasing, which this build needs and which
+  // measured free, is exactly what stops the compiler doing this itself: it
+  // cannot prove cp[] survives the writes into output->vertices.
+  const std::uint32_t position_desc = Bits(vcd_low, 9, 2);
+  const std::uint32_t position_format = Bits(g0, 1, 3);
+  const std::uint32_t position_count = Bits(g0, 0, 1) + 2u;
+  const std::uint32_t position_component = FormatSize(position_format);
+  const std::uint32_t position_size = position_component * position_count;
+  const std::uint32_t position_fraction = Bits(g0, 4, 5);
+
+  const std::uint32_t normal_desc = Bits(vcd_low, 11, 2);
+  const std::uint32_t normal_format = Bits(g0, 10, 3);
+  const bool has_ntb = Bits(g0, 9, 1) != 0u;
+  const bool normal_index3 = Bits(g0, 31, 1) != 0u;
+  const std::uint32_t component_size = FormatSize(normal_format);
+  const unsigned normal_bits = component_size * 8u;
+  const std::uint32_t normal_fraction_raw = normal_format == 1u || normal_format == 3u ?
+      normal_bits - 2u : normal_bits - 1u;
+  const std::uint32_t normal_fraction = normal_format >= 4u ? 0u : normal_fraction_raw;
+
+  struct TexSlot
+  {
+    std::uint32_t descriptor, format, count, component, size, fraction;
+  };
+  TexSlot tex[8];
+  for (unsigned t = 0; t < 8u; ++t)
+  {
+    const auto [format, elements] = TextureFormat(g0, g1, g2, t);
+    tex[t].descriptor = Bits(vcd_high, t * 2u, 2);
+    tex[t].format = format;
+    tex[t].count = elements + 1u;
+    tex[t].component = FormatSize(format);
+    tex[t].size = tex[t].component * tex[t].count;
+    tex[t].fraction = TextureFraction(g0, g1, g2, t);
+  }
+
   for (std::uint16_t vertex_index = 0; vertex_index < packet.vertex_count; ++vertex_index)
   {
     GxVertex vertex;
@@ -265,10 +310,6 @@ bool GxVertexLoader::Decode(const GxDrawPacket& packet, std::span<const std::uin
       }
     }
 
-    const std::uint32_t position_desc = Bits(vcd_low, 9, 2);
-    const std::uint32_t position_format = Bits(g0, 1, 3);
-    const std::uint32_t position_count = Bits(g0, 0, 1) + 2u;
-    const std::uint32_t position_size = FormatSize(position_format) * position_count;
     bool skip_vertex = false;
     const std::uint8_t* position = nullptr;
     if (position_desc == 1u)
@@ -290,20 +331,11 @@ bool GxVertexLoader::Decode(const GxDrawPacket& packet, std::span<const std::uin
     }
     if (position_desc != 0u && position == nullptr && !skip_vertex) return false;
     for (std::uint32_t i = 0; i < position_count && position != nullptr; ++i)
-      vertex.position[i] = ReadComponent(position + i * FormatSize(position_format), position_format, Bits(g0, 4, 5));
+      vertex.position[i] = ReadComponent(position + i * position_component, position_format, position_fraction);
 
-    const std::uint32_t normal_desc = Bits(vcd_low, 11, 2);
-    const std::uint32_t normal_format = Bits(g0, 10, 3);
-    const bool has_ntb = Bits(g0, 9, 1) != 0u;
-    const bool normal_index3 = Bits(g0, 31, 1) != 0u;
-    const std::uint32_t component_size = FormatSize(normal_format);
-    const unsigned normal_bits = component_size * 8u;
-    const std::uint32_t normal_fraction = normal_format == 1u || normal_format == 3u ?
-        normal_bits - 2u : normal_bits - 1u;
     const auto decode_normal = [&](const std::uint8_t* source, std::array<float, 3>& target) {
       for (std::uint32_t i = 0; i < 3u; ++i)
-        target[i] = ReadComponent(source + i * component_size, normal_format,
-                                  normal_format >= 4u ? 0u : normal_fraction);
+        target[i] = ReadComponent(source + i * component_size, normal_format, normal_fraction);
     };
     if ((normal_desc == 2u || normal_desc == 3u) && has_ntb && normal_index3)
     {
@@ -352,13 +384,18 @@ bool GxVertexLoader::Decode(const GxDrawPacket& packet, std::span<const std::uin
     }
     for (unsigned texture = 0; texture < 8; ++texture)
     {
-      const std::uint32_t descriptor = Bits(vcd_high, texture * 2u, 2);
-      const auto [format, elements] = TextureFormat(g0, g1, g2, texture);
-      const std::uint32_t count = elements + 1u;
-      const std::uint8_t* source = AttributeData(reader, m_memory, cp, 4u + texture, descriptor, FormatSize(format) * count);
-      if (descriptor != 0u && source == nullptr) return false;
-      for (std::uint32_t i = 0; i < count && source != nullptr; ++i)
-        vertex.texcoord[texture][i] = ReadComponent(source + i * FormatSize(format), format, TextureFraction(g0, g1, g2, texture));
+      const TexSlot& slot = tex[texture];
+      // A slot the vertex format does not carry costs nothing beyond this test.
+      // It used to cost two eight-way switches and a call before reaching the
+      // same conclusion, on every vertex, for all eight slots.
+      if (slot.descriptor == 0u)
+        continue;
+      const std::uint8_t* source =
+          AttributeData(reader, m_memory, cp, 4u + texture, slot.descriptor, slot.size);
+      if (source == nullptr) return false;
+      for (std::uint32_t i = 0; i < slot.count; ++i)
+        vertex.texcoord[texture][i] =
+            ReadComponent(source + i * slot.component, slot.format, slot.fraction);
     }
     if (!skip_vertex)
       output->vertices.push_back(vertex);
