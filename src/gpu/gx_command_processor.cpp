@@ -104,7 +104,10 @@ void GxCommandProcessor::Write(std::uint64_t value, std::uint8_t size)
 {
   if (size != 1u && size != 2u && size != 4u && size != 8u)
     return;
-  std::array<std::uint8_t, 8> bytes{};
+  /* Not value-initialised: only the first `size` of them are written, and
+   * only those are passed on. This runs on every four-byte store the guest
+   * makes to the write-gather pipe, which is 96 M of them in a 720 s run. */
+  std::array<std::uint8_t, 8> bytes;
   for (std::uint8_t i = 0; i < size; ++i)
     bytes[i] = static_cast<std::uint8_t>(value >> ((size - i - 1u) * 8u));
   WriteBytes(std::span{bytes}.first(size));
