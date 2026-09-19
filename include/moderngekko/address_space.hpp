@@ -7,6 +7,25 @@
 
 namespace moderngekko
 {
+namespace address_space_detail
+{
+inline std::uint32_t ToPhysicalAddress(std::uint32_t address)
+{
+  if ((address & 0x80000000u) != 0u)
+    return address & 0x3FFFFFFFu;
+  return address;
+}
+
+template <typename Container>
+auto ResolveRegion(Container& memory, std::uint32_t offset, std::size_t size)
+    -> decltype(memory.data())
+{
+  if (offset > memory.size() || size > memory.size() - offset)
+    return nullptr;
+  return memory.data() + offset;
+}
+}
+
 class AddressSpace final
 {
 public:
@@ -28,8 +47,30 @@ public:
   std::span<std::uint8_t> GetMem2();
   std::span<const std::uint8_t> GetMem2() const;
 
-  std::uint8_t* Resolve(std::uint32_t address, std::size_t size);
-  const std::uint8_t* Resolve(std::uint32_t address, std::size_t size) const;
+  /* Defined here rather than out of line because the vertex loader calls it
+   * once per attribute per vertex -- four or five times for each of the 14 M
+   * vertices in the slow window -- and across a translation unit boundary the
+   * compiler could see neither the two span sizes nor that the whole thing is
+   * a pair of compares. What it computes is unchanged. */
+  std::uint8_t* Resolve(std::uint32_t address, std::size_t size)
+  {
+    const std::uint32_t physical = address_space_detail::ToPhysicalAddress(address);
+    if (physical < m_mem1.size())
+      return address_space_detail::ResolveRegion(m_mem1, physical, size);
+    if (physical >= Mem2Base)
+      return address_space_detail::ResolveRegion(m_mem2, physical - Mem2Base, size);
+    return nullptr;
+  }
+
+  const std::uint8_t* Resolve(std::uint32_t address, std::size_t size) const
+  {
+    const std::uint32_t physical = address_space_detail::ToPhysicalAddress(address);
+    if (physical < m_mem1.size())
+      return address_space_detail::ResolveRegion(m_mem1, physical, size);
+    if (physical >= Mem2Base)
+      return address_space_detail::ResolveRegion(m_mem2, physical - Mem2Base, size);
+    return nullptr;
+  }
 
   bool Read8(std::uint32_t address, std::uint8_t* value) const;
   bool Read16(std::uint32_t address, std::uint16_t* value) const;
