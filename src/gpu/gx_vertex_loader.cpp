@@ -293,9 +293,20 @@ bool GxVertexLoader::Decode(const GxDrawPacket& packet, std::span<const std::uin
     tex[t].fraction = TextureFraction(g0, g1, g2, t);
   }
 
+  // Built once and copied, rather than default-constructed per vertex. A
+  // GxVertex is about 140 bytes of members that all carry an initialiser, so
+  // constructing one and then copying it into the vector wrote every byte
+  // twice -- and the loop writes only the attributes the descriptors name, so
+  // the rest of it has to arrive from somewhere. Copying the prototype is that
+  // somewhere, and it is one pass instead of two.
+  const GxVertex proto{};
+
   for (std::uint16_t vertex_index = 0; vertex_index < packet.vertex_count; ++vertex_index)
   {
-    GxVertex vertex;
+    // reserve() above sized the vector for the whole draw, so nothing here
+    // reallocates and the reference stays good for the iteration.
+    output->vertices.push_back(proto);
+    GxVertex& vertex = output->vertices.back();
     if ((vcd_low & 1u) != 0u)
     {
       if (!reader.ReadU8(&vertex.position_matrix)) return false;
@@ -397,8 +408,8 @@ bool GxVertexLoader::Decode(const GxDrawPacket& packet, std::span<const std::uin
         vertex.texcoord[texture][i] =
             ReadComponent(source + i * slot.component, slot.format, slot.fraction);
     }
-    if (!skip_vertex)
-      output->vertices.push_back(vertex);
+    if (skip_vertex)
+      output->vertices.pop_back();
   }
   if (!reader.AtEnd())
     return false;
