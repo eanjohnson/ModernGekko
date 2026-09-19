@@ -110,6 +110,40 @@ int main()
       return 1;
   }
 
+  /* The per-VAT vertex size is memoised, so the thing that can go wrong is
+   * not the arithmetic above -- which rewrites all five registers every
+   * iteration and so never serves a cached entry -- but a stale entry after
+   * a partial state change. Keep all eight VATs live, touch one register at
+   * a time, and read every VAT back each iteration. */
+  {
+    /* A fresh one, so the model starts where the processor does: the loop
+     * above left five registers set and this one tracks all twenty-six. */
+    moderngekko::GxCommandProcessor partial;
+    std::uint32_t low = 0, high = 0;
+    std::array<std::array<std::uint32_t, 3>, 8> vat{};
+    for (std::uint32_t iteration = 0; iteration < 100000u; ++iteration)
+    {
+      const std::uint32_t value = random();
+      const std::uint8_t slot = static_cast<std::uint8_t>(random() & 7u);
+      switch (random() % 5u)
+      {
+      case 0: low = value & 0x1FFFFu; LoadCp(partial, 0x50u, low); break;
+      case 1: high = value & 0xFFFFu; LoadCp(partial, 0x60u, high); break;
+      case 2: vat[slot][0] = value; LoadCp(partial, static_cast<std::uint8_t>(0x70u + slot), value); break;
+      case 3: vat[slot][1] = value; LoadCp(partial, static_cast<std::uint8_t>(0x80u + slot), value); break;
+      default: vat[slot][2] = value; LoadCp(partial, static_cast<std::uint8_t>(0x90u + slot), value); break;
+      }
+      for (std::uint8_t v = 0; v < 8u; ++v)
+      {
+        if (partial.GetVertexSize(v) !=
+            DolphinVertexSize(low, high, vat[v][0], vat[v][1], vat[v][2]))
+          return 5;
+      }
+    }
+    if (partial.GetVertexSizeHits() == 0u)
+      return 6; /* the memo never served anything: the test proves nothing */
+  }
+
   const std::array<std::uint8_t, 13> xf = {
       0x10, 0x00, 0x01, 0x10, 0x00, 0x3F, 0x80, 0x00, 0x00, 0x40, 0x00, 0x00, 0x00};
   for (std::size_t split = 1; split < xf.size(); ++split)

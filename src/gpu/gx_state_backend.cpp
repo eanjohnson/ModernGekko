@@ -10,6 +10,7 @@ namespace moderngekko
 {
 volatile unsigned char *g_phase_slot = nullptr;
 unsigned char g_phase_vertex_load = 0;
+unsigned char g_phase_display_list = 0;
 
 GxStateBackend::GxStateBackend(AddressSpace& memory) : m_memory(memory), m_vertex_loader(memory)
 {

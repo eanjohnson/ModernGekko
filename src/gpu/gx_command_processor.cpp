@@ -4,6 +4,7 @@
 #include "moderngekko/gx_command_processor.hpp"
 
 #include "moderngekko/address_space.hpp"
+#include "moderngekko/phase_hook.hpp"
 
 #include <algorithm>
 #include <bit>
@@ -93,6 +94,10 @@ void GxCommandProcessor::Reset()
   m_vcd_low = 0;
   m_vcd_high = 0;
   m_vat = {};
+  m_vertex_size = {};
+  m_vertex_size_valid = 0;
+  m_vertex_size_hits = 0;
+  m_vertex_size_misses = 0;
   m_array_bases = {};
   m_array_strides = {};
   m_command_count = 0;
@@ -154,6 +159,39 @@ std::uint64_t GxCommandProcessor::GetUnknownOpcodeCount() const
 }
 
 std::uint32_t GxCommandProcessor::GetVertexSize(std::uint8_t vat) const
+{
+  const std::uint8_t index = vat & 7u;
+  if (!m_vertex_size_cache)
+    return ComputeVertexSize(index);
+  if ((m_vertex_size_valid >> index) & 1u)
+  {
+    ++m_vertex_size_hits;
+    return m_vertex_size[index];
+  }
+  ++m_vertex_size_misses;
+  const std::uint32_t size = ComputeVertexSize(index);
+  m_vertex_size[index] = size;
+  m_vertex_size_valid |= static_cast<std::uint8_t>(1u << index);
+  return size;
+}
+
+void GxCommandProcessor::SetVertexSizeCache(bool enabled)
+{
+  m_vertex_size_cache = enabled;
+  m_vertex_size_valid = 0;
+}
+
+std::uint64_t GxCommandProcessor::GetVertexSizeHits() const
+{
+  return m_vertex_size_hits;
+}
+
+std::uint64_t GxCommandProcessor::GetVertexSizeMisses() const
+{
+  return m_vertex_size_misses;
+}
+
+std::uint32_t GxCommandProcessor::ComputeVertexSize(std::uint8_t vat) const
 {
   const auto& attributes = m_vat[vat & 7u];
   const std::uint32_t g0 = attributes[0];
@@ -296,6 +334,10 @@ void GxCommandProcessor::ExecuteDisplayList(std::uint32_t address, std::uint32_t
   if (data == nullptr)
     return;
 
+  /* Replay is its own phase. Nested lists restore to the enclosing one and
+   * the Draw scope inside restores to this, so gxdl is the walk itself:
+   * decode and the length arithmetic, with vertex load and submit excluded. */
+  PhaseScope phase(g_phase_display_list);
   ++m_display_list_depth;
   std::size_t consumed = 0;
   const std::span<const std::uint8_t> commands{data, size};
@@ -314,11 +356,16 @@ void GxCommandProcessor::LoadCp(std::uint8_t command, std::uint32_t value)
 {
   switch (command & 0xF0u)
   {
-  case 0x50: m_vcd_low = value; break;
-  case 0x60: m_vcd_high = value; break;
-  case 0x70: m_vat[command & 7u][0] = value; break;
-  case 0x80: m_vat[command & 7u][1] = value; break;
-  case 0x90: m_vat[command & 7u][2] = value; break;
+  /* The five that feed the vertex size invalidate it. VCD is shared by
+   * every VAT, so it drops all eight; a VAT word drops only its own. */
+  case 0x50: m_vcd_low = value; m_vertex_size_valid = 0; break;
+  case 0x60: m_vcd_high = value; m_vertex_size_valid = 0; break;
+  case 0x70:
+  case 0x80:
+  case 0x90:
+    m_vat[command & 7u][((command & 0xF0u) >> 4u) - 7u] = value;
+    m_vertex_size_valid &= static_cast<std::uint8_t>(~(1u << (command & 7u)));
+    break;
   case 0xA0: m_array_bases[command & 0xFu] = value; break;
   case 0xB0: m_array_strides[command & 0xFu] = static_cast<std::uint8_t>(value); break;
   default: break;

@@ -16,6 +16,7 @@ namespace moderngekko
 {
 extern volatile unsigned char *g_phase_slot;
 extern unsigned char g_phase_vertex_load;
+extern unsigned char g_phase_display_list;
 
 /* Scoped, because Decode has several early returns. */
 struct PhaseScope
